@@ -1,53 +1,69 @@
-import os
+from typing import List
+
 from dotenv import load_dotenv
-from langchain.agents import create_agent
-from langchain.tools import tool
-from tavily import TavilyClient
-from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+from langchain_core.messages import HumanMessage, ToolMessage
+from langchain.tools import tool, BaseTool
 from langchain_openai import ChatOpenAI
-from langchain_ollama import ChatOllama
-from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
-from langchain_tavily import TavilySearch
-from pydantic import BaseModel, Field
 
-class Source(BaseModel):
-    """Schema for Agent sources of information"""
-    source: str = Field(description="The source of the information")
-
-class AgentResponse(BaseModel):
-    """Schema for Agent response with answer and sources of information"""
-    response: str = Field(description="The response from the agent for the query")
-    sources: list[Source] = Field(default_factory=list, description="The sources used to generate the response")
+from callbacks import AgentCallbackHandler
 
 load_dotenv()
 
-tools = [TavilySearch()]
-# tavily_client = TavilyClient()
-# @tool
-# def search_tavily(query: str) -> str:
-#     """Search the web for information
-    
-#     Args:
-#         query: The query to search for
-#     Returns:
-#         The search results
-#     """
-#     print(f"Searching the web for {query}")
-#     results = tavily_client.search(query, max_results=4)
-#     # print(results)
-#     return results
-# tools = [search_tavily]
 
-llm=ChatOpenAI(model="gpt-4o-mini", temperature=0)
-agent = create_agent(model=llm, tools=tools, response_format=AgentResponse)
+@tool
+def get_text_length(text: str) -> int:
+    """Returns the length of a text by characters"""
+    print(f"get_text_length enter with {text=}")
+    text = text.strip("'\n").strip(
+        '"'
+    )  # stripping away non alphabetic characters just in case
+
+    return len(text)
 
 
-def main():
-    print("Hello from langchain-course!")
-
-    result = agent.invoke({"messages": [HumanMessage(content="I want you to search linkedin for 4 AI engineer roles in San Francisco with Easy Apply, and are remote, give me their title and a link to the job posting")]})
-    print(result)
+def find_tool_by_name(tools: List[BaseTool], tool_name: str) -> BaseTool:
+    for tool in tools:
+        if tool.name == tool_name:
+            return tool
+    raise ValueError(f"Tool wtih name {tool_name} not found")
 
 
 if __name__ == "__main__":
-    main()
+    print("Hello LangChain Tools (.bind_tools)!")
+    tools = [get_text_length]
+
+    llm = ChatOpenAI(
+        temperature=0,
+        callbacks=[AgentCallbackHandler()],
+    )
+    llm_with_tools = llm.bind_tools(tools)
+
+    # Start conversation
+    messages = [HumanMessage(content="What is the length of the word: DOG")]
+
+    while True:
+        ai_message = llm_with_tools.invoke(messages)
+
+        # If the model decides to call tools, execute them and return results
+        tool_calls = getattr(ai_message, "tool_calls", None) or []
+        if len(tool_calls) > 0:
+            messages.append(ai_message)
+            for tool_call in tool_calls:
+                # tool_call is typically a dict with keys: id, type, name, args
+                tool_name = tool_call.get("name")
+                tool_args = tool_call.get("args", {})
+                tool_call_id = tool_call.get("id")
+
+                tool_to_use = find_tool_by_name(tools, tool_name)
+                observation = tool_to_use.invoke(tool_args)
+                print(f"observation={observation}")
+
+                messages.append(
+                    ToolMessage(content=str(observation), tool_call_id=tool_call_id)
+                )
+            # Continue loop to allow the model to use the observations
+            continue
+
+        # No tool calls -> final answer
+        print(ai_message.content)
+        break
